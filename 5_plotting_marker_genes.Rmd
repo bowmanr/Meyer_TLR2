@@ -1,0 +1,227 @@
+---
+title: "Marker Genes"
+output: html_document
+date: "2023-02-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_18_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+s_data@meta.data$group3_rev<-factor(s_data@meta.data$group3,levels=c(rev(final_order)))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+```
+
+
+# PBS progenitor data
+```{r data selection}
+library(scCustomize)
+Seurat::DefaultAssay(s_data)<-"RNA"
+s_data<-NormalizeData(s_data)
+s_data<-ScaleData(s_data)
+HSPC_enriched<- grep("HSCP|Pro|granu|myeloid|Myeloid_progenitor_[AB]",levels(s_data$group3)[10:21],value = T)
+Idents(s_data)<-"group3_rev"
+s_data_PBS<- subset(s_data,Treatment=="PBS"&group3%in%HSPC_enriched)
+color_2<- color_scheme_rev[as.character(unique(Idents(s_data_PBS)))]
+
+MP_markers<-read.delim("~/Projects/Meyer/TLR/Data/MarkerGenes_MP_subset.txt")
+all_markers<-read.delim("~/Projects/Meyer/TLR/Data/MarkerGenes_all.txt")
+
+levels(Idents(s_data_PBS))
+s_data_PBS@meta.data%>%
+    filter(group3_rev=="HSCP-MPP_c9")%>%
+    pull(icgs2_clusternum_mp_subclust)%>%
+    unique
+
+s_data_PBS@meta.data%>%
+    filter(group3_rev=="granulocytopoietic cell_c12")%>%
+    pull(icgs2_clusternum_mp_subclust)%>%
+    unique
+
+ s_data_PBS@meta.data%>%
+       filter(group3_rev=="granulocytopoietic cell_c12")%>%
+    pull(icgs2_clusternum)%>%
+    unique
+    
+
+MP_markers%>%
+      filter(Cell.State==12)
+
+all_markers%>%
+      filter(Cell.State==12)
+      
+```
+
+```{r gene selection and violin or dotplot plotting}
+genes_of_interest<- unique(c("Socs2","Meis1","Mycn","Hmga2","Cd34","Pim2","Lck","Sox4","Epcam","Cish","Cd48","Pim1","Hoxa9","Runx3","Il2ra","Cbx1","Cux1","Flt3","Trp53",
+                      "Ikzf2","Ctla2a","Gata2","Ncam2","Angpt1",
+                      "Pbk","Mki67","Ccnb1","Pclaf","Ezh2","Brca2","Ccnb1","Hmgb2","Rad21",
+                      "Ms4a3","Gfi1","Fkbp11","Prtn3","Myb","Ifngr1","Mpo","Mif","Ctsg","Npm1","Bcl2","Irf8",
+                      "Cdk4","Cdk6","Cd93","Lyar","Ybx3","Myc",
+                      "Vcam1","Cd63","Ptgr1","Ptgs1","Elane","S100a1","Siglecg","Cited2","Kit",
+                      "Mecom","Mycn","Meis1","Hoxa9","Socs2","Mki67","Ccnb1","Pclaf","Ms4a3","Zeb2","Cebpa","Cebpd","Cebpe"))
+#HSPC_marker_violin<-Stacked_VlnPlot(s_data_PBS,features = genes_of_interest,idents = HSPC_enriched,x_lab_rotate=T,colors_use = color_2)
+
+#ggsave(plot=HSPC_marker_violin,
+ #                     filename = paste0(save_folder,"/HSPC_RNA_marker_violin.pdf"),
+  #     width = 5,
+   #    height = 7
+    #    )
+
+HSPC_marker_clusterDotplot<-Clustered_DotPlot(seurat_object = s_data_PBS, 
+                             colors_use_idents = color_2,plot_km_elbow = F,
+                              cluster_ident = F,
+                              features = genes_of_interest,
+                              colors_use_exp = pals::coolwarm())
+
+pdf(file=paste0(save_folder,"/HSPC_marker_clusterDotplot.pdf"),width = 6.5,height = 8)
+HSPC_marker_clusterDotplot
+dev.off()
+
+```
+
+
+# PBS mature data
+```{r data selection}
+library(scCustomize)
+Seurat::DefaultAssay(s_data)<-"RNA"
+s_data<-NormalizeData(s_data)
+s_data<-ScaleData(s_data)
+mature_enriched<- levels(s_data$group3)[c(2:3,5:9)]
+Idents(s_data)<-"group3_rev"
+s_data_PBS<- subset(s_data,Treatment=="PBS"&group3%in%mature_enriched)
+color_2<- color_scheme_rev[as.character(unique(Idents(s_data_PBS)))]
+all_markers<-FindAllMarkers(s_data_PBS)
+all_markers%>%filter(cluster=="DC_c19")
+all_markers%>%group_by(cluster)%>%dplyr::slice(1:15)%>%data.frame
+```
+
+```{r gene selection and violin or dotplot plotting}
+
+all_markers<-read.delim("~/Projects/Meyer/TLR/Data/MarkerGenes_all.txt")
+
+s_data_PBS@meta.data%>%
+    filter(group3_rev=="granulocyte_c7")%>%
+    pull(icgs2_clusternum)%>%
+    unique
+
+all_markers%>%
+      filter(Cell.State==1)
+      
+
+genes_of_interest<-unique( c("Klf4","Cbfa2t3","Ctnna1","Anxa6",
+                      "Cd209a","Mrc1","Mgl2","H2-Eb1","Ciita","Fcgr2b","Cd163",
+                      "Ass1","Ly6c1","Cebpb","Ly6c2","Met","Ly6e","Dek","Rhoa",
+                      "F13a1","Ccr2","Tgfbi","Lyz2","Cx3cr1","Csf1r","Zeb2","Il6ra","Cd68",
+                      "Mmp9","Cxcr2","Cd33","Timp2","Csf3r","Slpi","Il1rn","Cd44","Hdc",
+                      "Camp","Lcn2","Cebpe","Ncam1","S100a8","S100a9","Klf5",
+                      "Ly6g","Ceacam1","Itgam","Klf7","Thbs1","Pbx1","St3gal5"))
+                      
+#mature_marker_violin<-Stacked_VlnPlot(s_data_PBS,features = genes_of_interest,idents = mature_enriched,x_lab_rotate=T,colors_use = color_2)
+
+#ggsave(plot=mature_marker_violin,
+#                      filename = paste0(save_folder,"/mature_RNA_marker_violin.pdf"),
+#       width = 5,
+#       height = 7
+#        )
+Idents(s_data_PBS)<-"group3_rev"
+s_data_PBS$group3_rev <- factor(s_data_PBS$group3_rev,levels=c("Mono_c22","monocyte_c25","DC_c19","DC_c18","granulocyte_c7",
+                                                               "BM Stage I neutrophil_c1","BM Stage I neutrophil_c21"))
+Idents(s_data_PBS)<-"group3_rev"
+
+mature_marker_clusterDotplot<-Clustered_DotPlot(seurat_object = s_data_PBS, 
+                             colors_use_idents = color_2[levels(Idents(s_data_PBS))],plot_km_elbow = F,
+                              cluster_ident = F,
+                              features = genes_of_interest,
+                              colors_use_exp = pals::coolwarm())
+
+pdf(file=paste0(save_folder,"/mature_marker_clusterDotplot.pdf"),width = 6.5,height = 8)
+mature_marker_clusterDotplot
+dev.off()
+
+```
+
+
+# single gene of interest
+```{r}
+library(scCustomize)
+Seurat::DefaultAssay(s_data)<-"RNA"
+s_data<-NormalizeData(s_data)
+s_data<-ScaleData(s_data)
+HSPC_enriched<- grep("HSCP|c21|Mac|c25",levels(s_data$group3),value = T)
+Idents(s_data)<-"group3"
+s_data_PBS<- subset(s_data,group3%in%HSPC_enriched)
+color_2<- color_scheme_rev[as.character(unique(Idents(s_data_PBS)))]
+
+Idents(s_data_PBS)<-"group3_rev"
+Seurat::DefaultAssay(s_data_PBS)<-"RNA"
+
+scCustomize::Stacked_VlnPlot(s_data_PBS,features = c("Csf3","Csf3r","Tlr2"),split.by = "Treatment",)
+VlnPlot_scCustom(s_data_PBS,features = c("Csf3r"),split.by = "Treatment")
+VlnPlot_scCustom(s_data_PBS,features = grep("H2-[AE]",rownames(s_data_PBS@assays$RNA),value=T),split.by = "Treatment")
+VlnPlot_scCustom(s_data_PBS,features = grep("H2-[D]",rownames(s_data_PBS@assays$RNA),value=T),split.by = "Treatment")
+Stacked_VlnPlot(s_data_PBS,features = grep("Csf3r|H2-DMa|H2-Ab1|H2-Eb1|Cd74",rownames(s_data_PBS@assays$RNA),value=T),split.by = "Treatment",x_lab_rotate = 45)
+
+Stacked_VlnPlot(s_data_PBS,features = grep("Cd80|Cd86",rownames(s_data_PBS@assays$RNA),value=T),split.by = "Treatment",x_lab_rotate = 45)
+
+
+ggsave(Stacked_VlnPlot(s_data_PBS,features = grep("Csf3r|H2-DMa|H2-Ab1|H2-Eb1|Cd74",rownames(s_data_PBS@assays$RNA),value=T),split.by = "Treatment",x_lab_rotate = 45,colors_use = c("grey66",brewer.pal(n=5,name = "Reds")[5])),filename="~/Desktop/for_sara_R01.pdf",height = 8,width = 4)
+```

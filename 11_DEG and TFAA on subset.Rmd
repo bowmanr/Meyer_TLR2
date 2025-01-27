@@ -1,0 +1,289 @@
+---
+title: "TLR2 scRNA DEG lists"
+output: html_document
+date: "2024-05-10"
+---
+
+# loading data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2025/January/01_02_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"RNA"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+s_data@meta.data$group3_rev<-factor(s_data@meta.data$group3,levels=c(rev(final_order)))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+```
+
+
+# DEGs
+```{r DEG by population}
+s_data$cell_type_stim<-paste(s_data$group3,s_data$Treatment,sep="_")
+cell_type_of_interest<-c("HSCP-MPP_c5_PAM","HSCP-MPP_c5_PBS",
+                          "HSCP-MPP_c9_PAM","HSCP-MPP_c9_PBS",
+                          "Myeloid progenitor cell_c14_PAM","Myeloid progenitor cell_c14_PBS",
+                         "DC_c18_PAM","DC_c18_PBS","Macrophage_c13_PAM","Macrophage_c13_PBS",
+                         "ProNeu1_PAM","ProNeu1_PBS","ProNeu2_PAM","ProNeu2_PBS",
+                         "BM Stage I neutrophil_c1_PBS","BM Stage I neutrophil_c1_PAM")
+subset_s_data<- subset(s_data,cell_type_stim%in%cell_type_of_interest)
+Idents(subset_s_data)<-"cell_type_stim"
+Seurat::DefaultAssay(subset_s_data)<-"SCT"
+
+DEG_c9_PBS_vs_c14_PBS<-FindMarkers(subset_s_data,recorrect_umi=FALSE,
+                                   ident.1 ="HSCP-MPP_c9_PBS",
+                                   ident.2 = "Myeloid progenitor cell_c14_PBS")%>%
+                                  tibble::rownames_to_column(var="gene")
+
+DEG_c9_PBS_vs_c14_PAM<-FindMarkers(subset_s_data,recorrect_umi=FALSE,
+                                   ident.1 ="HSCP-MPP_c9_PBS",
+                                   ident.2 = "Myeloid progenitor cell_c14_PAM")%>%
+                                  tibble::rownames_to_column(var="gene")
+DEG_c14_PBS_vs_c14_PAM<-FindMarkers(subset_s_data,recorrect_umi=FALSE,
+                                   ident.1 ="Myeloid progenitor cell_c14_PBS",
+                                   ident.2 = "Myeloid progenitor cell_c14_PAM")%>%
+                                  tibble::rownames_to_column(var="gene")
+DEG_c5_PBS_vs_c9_PBS<-FindMarkers(subset_s_data,recorrect_umi=FALSE,assay = "SCT",
+                                   ident.1 ="HSCP-MPP_c5_PBS",
+                                   ident.2 = "HSCP-MPP_c9_PBS")%>%
+                                  tibble::rownames_to_column(var="gene")
+DEG_DC_c18_vs_MAC_PAM<-FindMarkers(subset_s_data,recorrect_umi=F,assay = "SCT",
+                                   ident.1="DC_c18_PBS",
+                                   ident.2="Macrophage_c13_PAM")%>%
+                                  tibble::rownames_to_column(var="gene")
+```
+
+```{r volcano c9 vs c14 plots}
+
+volcano<-ggplot(DEG_c9_PBS_vs_c14_PAM%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in c9 PBS",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Up in c14 PAM",
+            TRUE~"not sig"
+          )),aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group))+
+              geom_point_rast()+
+              theme_minimal(base_size = 16)+
+              theme(axis.line = element_line())+
+              scale_color_manual(values=c("Up in c9 PBS"="#875692",
+                                          "Up in c14 PAM"="#F38400",
+                                          "not sig"="grey70"))+
+           #   scale_x_continuous(limits = c(-3,5))+
+            ggrepel::geom_label_repel(data=DEG_c9_PBS_vs_c14_PAM%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in c9 PBS",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Up in c14 PAM",
+            TRUE~"not sig"
+          ))%>%
+                                          filter(Group!="not sig"),
+                                      aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group,label=gene))
+       
+ggsave(volcano,filename=paste0(save_folder,"HSPC_c9PBS_vs_c14PAM_volcano.pdf"),width=12,height=6)
+       
+```
+
+```{r volcano DC vs MAC plots}
+volcano<-ggplot(DEG_DC_c18_vs_MAC_PAM%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in DC c18 PBS",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Up in Mac PAM",
+            TRUE~"not sig"
+          )),aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group))+
+              geom_point_rast()+
+              theme_minimal(base_size = 16)+
+              theme(axis.line = element_line())+
+              scale_color_manual(values=c("Up in DC c18 PBS"="#882D17",
+                                          "Up in Mac PAM"="#8DB600",
+                                          "not sig"="grey70"))+
+           #   scale_x_continuous(limits = c(-3,5))+
+            ggrepel::geom_label_repel(data=DEG_DC_c18_vs_MAC_PAM%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in DC c18 PBS",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Up in Mac PAM",
+            TRUE~"not sig"
+          ))%>%
+                                          filter(Group!="not sig"),
+                                      aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group,label=gene))
+       
+ggsave(volcano,filename=paste0(save_folder,"HSPC_DC-c18_vs_Mac-c13_volcano.pdf"),width=12,height=6)
+       
+```
+
+
+# correlate DEG with pseudo
+```{r c9 workup with pseudotime}
+
+c9_PAM_pseudtome<-s_data@meta.data%>%data.frame%>%
+                          filter(Treatment=="PAM"&grepl("c9",group3))%>%
+                          summarize(max=max(URD_pseuodtime[,1]),
+                                    mediam=median(URD_pseuodtime[,1]))
+
+subset_s_data_c9<- subset(s_data,cell_type_stim%in%"HSCP-MPP_c9_PBS")
+
+subset_s_data_c9<-NormalizeData(subset_s_data_c9,assay = "RNA")
+
+
+gene_expression<-data.frame("cell"=rownames(subset_s_data_c9@meta.data),
+                            "pseudotime"=subset_s_data_c9@meta.data$URD_pseuodtime[,1],
+                           t(subset_s_data_c9@assays$RNA@data))
+
+c9_cor_pseudo_RNA<-apply(gene_expression[,-c(1,2)],2,function(x){
+  cor(gene_expression[,2],x,method = "spearman")
+})
+
+gene_expression%>%
+         select(cell,pseudotime,Adgrg1,Cd34,Socs2,Bcl2,Meis1,Kit,Irf8,Elane,Prtn3,Ly6c2,Tyrobp,Lgals1,Ms4a3)%>%
+         tidyr::pivot_longer(cols = !c(pseudotime,cell),names_to = "gene",values_to = "expression")%>%
+         arrange(pseudotime)%>%
+         mutate(PAM_pseudo_med=ifelse(as.numeric(pseudotime)>=as.numeric(c9_PAM_pseudtome$mediam),"above","below"))%>%     
+         mutate(PAM_pseudo_max=ifelse(as.numeric(pseudotime)>=as.numeric(c9_PAM_pseudtome$max),"above","below"))%>%     
+         tidyheatmaps::tidy_heatmap(rows = gene,columns = cell,values = expression,show_colnames = F,scale = "row",
+                                   treeheight_row = 0,
+                                    color_legend_min = -5,color_legend_max = 5,
+                                    color_legend_n = 25,
+                                    colors=rev(pals::brewer.rdbu(n=25)),
+                                    cluster_rows = T, cellheight = 10,cellwidth = 0.1,
+                                    annotation_col = c(pseudotime),annotation_legend = F,
+                                    annotation_colors = list(pseudotime=brewer.blues(n=9)), 
+                           filename=paste0(save_folder,"c9_PBS_heatmap.pdf"),width = 6,height = 5
+                                      )
+```
+
+```{r c9 line plot}
+line_charts<-ggplot(gene_expression%>%
+         select(pseudotime,Adgrg1,Cd34,Ly6c2,Elane)%>%
+         tidyr::pivot_longer(cols = !pseudotime,names_to = "gene",values_to = "expression"),
+         aes(x=pseudotime,y=expression,color=gene,group=gene))+
+         geom_point(color="black",alpha=0.01)+
+         geom_smooth(aes(color=gene))+
+         guides(color="none")+
+         facet_wrap(~gene,scales = "free")+
+         theme_classic(base_size = 12)+
+         theme(strip.background = element_blank())
+
+ggsave(line_charts,filename=paste0(save_folder,"c9_PBS_pseudotime_line_charts.pdf"),width = 6,height = 5)
+```
+
+```{r c18 vs c13}
+s_data$cell_type_stim<-paste(s_data$group3,s_data$Treatment,sep="_")
+cell_type_of_interest<-c("DC_c18_PBS","Macrophage_c13_PAM","monocyte_c25_PBS","Mono_c22_PBS","Mono_c22_PAM","monocyte_c25_PAM")
+subset_s_data_DCMAC<- subset(s_data,cell_type_stim%in%cell_type_of_interest)
+Idents(subset_s_data_DCMAC)<-"cell_type_stim"
+Seurat::DefaultAssay(subset_s_data_DCMAC)<-"RNA"
+subset_s_data_DCMAC<-NormalizeData(subset_s_data_DCMAC,assay="RNA")
+
+gene_expression_DCMAC<-data.frame("cell"=rownames(subset_s_data_DCMAC@meta.data),
+                                  "pseudotime"=subset_s_data_DCMAC@meta.data$URD_pseuodtime[,1],
+                            subset_s_data_DCMAC@meta.data,
+                           t(subset_s_data_DCMAC@assays$RNA@data))
+
+gene_expression_DCMAC%>%
+          ggplot(aes(x=pseudotime,y=Csf3r,color=group3))+
+          geom_point(color="black",alpha=0.01)+
+         geom_smooth(aes(color=group3))+
+         guides(color="none")+
+         facet_wrap(~cell_type_stim,scales = "free")+
+         theme_classic(base_size = 12)+
+         theme(strip.background = element_blank())
+
+macro_PAM_boxplots<-gene_expression_DCMAC%>%
+                      select(group3,Treatment,cell_type_stim,
+                             STREP.TotalA,F4.80.TotalA,
+                             Csf1r,Irf8,Zeb2,Klf4,
+                           # F4.80.TotalA, CD86.TotalA,CD80.TotalA
+                            )%>%
+                      tidyr::pivot_longer(cols = !c(group3,Treatment,cell_type_stim),names_to = "Feature",values_to = "Expression")%>%
+                    mutate(Feature=factor(Feature,levels=c("STREP.TotalA","F4.80.TotalA","Csf1r","Irf8","Zeb2","Klf4")))%>%
+                    ggplot(aes(y=cell_type_stim,x=Expression,fill=group3))+
+                                  geom_violin()+scale_fill_manual(values = color_scheme)+
+                                  facet_wrap(~Feature,scales = "free",ncol=3)+
+                    guides(fill="none")+
+                     theme_classic(base_size = 12)+
+                     theme(strip.background = element_blank())
+       
+ggsave(macro_PAM_boxplots,filename=paste0(save_folder,"/mac_DC_mono_violins.pdf"),width = 12,height = 6)
+                            
+```
+
+
+
+```{r volcano DC vs MAC plots}
+volcano<-ggplot(DEG_DC_c18_vs_MAC_PAM%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in DC c18 PBS",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Up in Mac PAM",
+            TRUE~"not sig"
+          )),aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group))+
+              geom_point_rast()+
+              theme_minimal(base_size = 16)+
+              theme(axis.line = element_line())+
+              scale_color_manual(values=c("Up in DC c18 PBS"="#882D17",
+                                          "Up in Mac PAM"="#8DB600",
+                                          "not sig"="grey70"))+
+           #   scale_x_continuous(limits = c(-3,5))+
+            ggrepel::geom_label_repel(data=DEG_DC_c18_vs_MAC_PAM%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in DC c18 PBS",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Up in Mac PAM",
+            TRUE~"not sig"
+          ))%>%
+                                          filter(Group!="not sig"),
+                                      aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group,label=gene))
+       
+ggsave(volcano,filename=paste0(save_folder,"HSPC_DC-c18_vs_Mac-c13_volcano.pdf"),width=12,height=6)
+       
+```

@@ -1,0 +1,228 @@
+---
+title: "TLR2 scRNA DEG lists"
+output: html_document
+date: "2024-05-10"
+---
+
+# loading data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/December/12_17_2024/'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+library(msigdbr)
+library(nichenetr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data_TF<-readRDS(file = "/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/December/12_17_2024/s_data_TFAA.rds")
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data_TF@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+
+
+addSmallLegend <- function(myPlot, pointSize = 0.75, textSize = 8, spaceLegend = 0.1) {
+  myPlot +
+    guides(shape = guide_legend(override.aes = list(size = pointSize)),
+           color = guide_legend(override.aes = list(size = pointSize))) +
+    theme(legend.title = element_text(size = textSize), 
+          legend.text  = element_text(size = textSize),
+          legend.key.size = unit(spaceLegend, "lines"))
+}
+
+addSmallLegend_bar <- function(myPlot, pointSize = 1.5, textSize = 8, spaceLegend = 0.1) {
+  myPlot +
+    guides(shape = guide_legend(override.aes = list(size = pointSize)),
+           fill = guide_legend(override.aes = list(size = pointSize),reverse = TRUE)) +
+    theme(legend.title = element_text(size = textSize), 
+          legend.text  = element_text(size = textSize),
+          legend.key.size = unit(spaceLegend, "lines"))
+}
+```
+
+```{r hallmark plotting against pseudotime}
+library(ggnewscale)
+TFAA_out<-data.frame(s_data_TF@meta.data,t(s_data_TF@assays$tfsulm@scale.data))
+
+
+wishlist<-c("Hmgb2","Nfia","Epas1","Cebpe","Cebpb","Irf8","Gfi1","Tp73","Tp53")
+
+wishlist<-colnames(t(s_data_TF@assays$tfsulm@scale.data))
+lapply(wishlist,function(x){
+  print(x)
+  
+TFAA_out$TF_of_interest<- TFAA_out[,gsub("-",".",x)]
+
+results<-ggplot(TFAA_out%>%
+          filter(group3!="Other"),
+          aes(x=URD_pseuodtime[,1],
+              y=TF_of_interest,
+              group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+            guides(color="none")+
+           new_scale_color() +
+          geom_rug(data=
+                      TFAA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          xlab("Pseudotime")+
+          ylab(x)+
+          guides(color="none")+
+          theme_classic(base_size = 8)
+
+  ggsave(results,filename=paste0(save_folder,"/pseudotime_test/",x,".pdf"),width = 2.5,height = 2.5)
+
+})
+
+```
+
+```{r pathway violin plots}
+ssGSEA_Hallmark_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_hallnark@scale.data))
+ssGSEA_Kegg_norm_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_keggplus_normalized@data))
+
+
+gene_sets_of_interest<-c("IVANOVA.HEMATOPOIESIS.STEM.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.MATURE.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.EARLY.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.INTERMEDIATE.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.LATE.PROGENITOR",
+                                                    "JAATINEN.HEMATOPOIETIC.STEM.CELL.UP",
+                                                    "BROWN.MYELOID.CELL.DEVELOPMENT.UP",
+                                                    "GAL.LEUKEMIC.STEM.CELL.UP")
+
+
+violin_out<-ssGSEA_Kegg_norm_out%>%
+      select(group3_rev,Treatment,all_of(gene_sets_of_interest))%>%
+      tidyr::pivot_longer( cols =-c(group3_rev,Treatment),names_to = "Gene",values_to = "Expression"
+                          )%>%
+      filter(group3_rev=="HSCP-MPP_c5")%>%
+      mutate(Gene=factor(Gene,level=gene_sets_of_interest))%>%
+      ggplot(aes(x=Treatment,y=Expression,fill=Treatment))+
+            geom_violin()+geom_jitter(size=0.2)+
+            facet_wrap(~Gene,scale="free")+
+            scale_fill_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+            theme_classic(base_size = 10)+
+            guides(fill="none")+
+            ylab("SCT normalized expression")+
+            theme(strip.background = element_blank())
+
+
+```
+
+```{r OTHER}
+Idents(s_data_HSPC_PBS)<-"group3_rev"
+
+all.markers%>%group_by(cluster)%>%slice(1:15)
+
+gene_sets<-s_data_HSPC@assays$escape.ssGSEA_HALLNARK%>%rownames()
+ggsave(heatmapEnrichment(s_data_HSPC, group.by = "Treatment",cluster.rows = T,
+                  facet.by = "group3_rev",scale=T,
+                  gene.set.use =gene_sets[1:50],
+                  assay = "escape.ssGSEA_HALLNARK"),
+       file=paste0(save_folder,"/HALLMARK_HSPC.pdf"),height = 15,width = 10)
+
+```
+
+```{r mature PAM vs PBS heatmap on pathways}
+mature_enriched<- levels(s_data$group3)[c(2:3,5:9)]
+s_data_mature<-subset(s_data,group3%in%mature_enriched)
+
+ggsave(heatmapEnrichment(s_data_mature, group.by = "Treatment",cluster.rows = T,
+                  facet.by = "group3_rev",scale=T,
+                  gene.set.use =gene_sets[1:50],
+                  assay = "escape.ssGSEA_HALLNARK"),
+       file=paste0(save_folder,"/HALLMARK_mature.pdf"),height = 15,width = 10)
+
+
+geyserEnrichment(s_data_HSPC, group.by = "Treatment",
+                 assay = "escape.ssGSEA_HALLNARK_normalized",
+                 gene.set = "HALLMARK-INTERFERON-GAMMA-RESPONSE", 
+                 facet.by = "group3_rev")+facet_wrap(~group3_rev,scales = "free")
+
+
+```
+
+```{r HSPC c5 volcano}
+library(readxl)
+library(ggrastr)
+library(ggrepel)
+c5_DEG<-readxl::read_xlsx(path = "/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_10_2024/TF_resuls.xlsx",sheet = "HSCP-MPP_c5")%>%data.frame%>%
+          mutate(Group=case_when(
+            avg_log2FC>1&p_val_adj<0.01~"Up in PAM",
+            avg_log2FC<(-1)&p_val_adj<0.01~"Down in PAM",
+            TRUE~"not sig"
+          ))
+
+
+volcano<-ggplot(c5_DEG,aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group))+
+              geom_point_rast()+
+              theme_minimal(base_size = 16)+
+              theme(axis.line = element_line())+
+              scale_color_manual(values=c("Down in PAM"="dodgerblue4",
+                                          "Up in PAM"=brewer.pal(n=5,name="Reds")[5],
+                                          "not sig"="grey70"))+
+              guides(color="none")+
+           #   scale_x_continuous(limits = c(-3,5))+
+            ggrepel::geom_label_repel(data=c5_DEG%>%
+                                          filter(Group!="not sig"),
+                                      aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group,label=Factor))
+       
+ggsave(volcano,filename=paste0(save_folder,"HSPC_c5_volcano_TF.pdf"),width=8,height=6)
+       
+```
+
+
+
+```{r zoomed in pseudotime by TFAA}
+library(ggnewscale)
+TFAA_out<-data.frame(s_data_TF@meta.data,t(s_data_TF@assays$tfsulm@scale.data))
+
+TFAA_out_subset<-TFAA_out%>%filter(grepl("Neu|granul|neu",group3))
+
+wishlist<-c("Klf4","Cebpa","Irf8","Gfi1")
+
+TF_Neut<-TFAA_out_subset%>%
+                      select(group3,Treatment,cell_type_stim,
+                             Klf4,Cebpa,
+                             Irf8,Gfi1,
+                            )%>%
+                      tidyr::pivot_longer(cols = !c(group3,Treatment,cell_type_stim),names_to = "Feature",values_to = "Expression")%>%
+                    ggplot(aes(y=cell_type_stim,x=Expression,fill=group3))+
+                                  geom_boxplot()+scale_fill_manual(values = color_scheme)+
+                                  facet_wrap(~Feature,scales = "free",ncol=2)+
+                    guides(fill="none")+
+                     theme_classic(base_size = 12)+
+                     theme(strip.background = element_blank())
+
+ggsave(TF_Neut,filename=paste0(save_folder,"/TF_Neut_violins.pdf"),width = 8,height = 8)
+
+```

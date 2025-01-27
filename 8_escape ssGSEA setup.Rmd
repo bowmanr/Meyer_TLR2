@@ -1,0 +1,228 @@
+---
+title: "TLR2 scRNA DEG lists"
+output: html_document
+date: "2024-05-10"
+---
+
+# loading data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_26_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+s_data@meta.data$group3_rev<-factor(s_data@meta.data$group3,levels=c(rev(final_order)))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+```
+
+
+
+```{r pathway selection}
+library(SCPA)
+library(dplyr)
+library(msigdbr)
+library(nichenetr)
+library(qusage)
+library(AUCell)
+library(doParallel)
+registerDoParallel(cores=8)
+
+s_data$celltype.stim <- paste(s_data$group3,s_data$orig.ident,sep = "__")
+Idents(s_data) <- "celltype.stim"
+
+hallmark_pathways_SCPA <- msigdbr::msigdbr(species = "Mus musculus", category = "H") %>%
+                            SCPA::format_pathways()
+hallmark_pathways <- msigdbr("mouse", category="H")
+hallmark_pathways_list <- split(hallmark_pathways$gene_symbol, hallmark_pathways$gs_name)
+
+keggplus_pathways <- msigdbr("mouse", category="C2")%>%
+                           filter(grepl("KEGG|TLR|HEMATO|LEUKEM|MYELOID|_STEM|STEMCELL",gs_name))
+keggplus_pathways_list <- split(keggplus_pathways$gene_symbol, keggplus_pathways$gs_name)
+
+reactome_pathways <- msigdbr("mouse", category="C2")%>%
+                           filter(grepl("REACTOME",gs_name))
+reactome_pathways_list <- split(reactome_pathways$gene_symbol, reactome_pathways$gs_name)
+
+```
+
+
+```{r}
+library(escape)
+library(ggnewscale)
+s_data <- runEscape(s_data,groups = 10000, BPPARAM =BiocParallel::bpparam() ,
+                        method = "ssGSEA",
+                        gene.sets = hallmark_pathways_list, 
+                        min.size = 5,
+                        new.assay.name = "escape_hallnark")
+
+s_data <- performNormalization(sc.data = s_data, 
+                                   assay = "escape_hallnark", 
+                                   gene.sets = hallmark_pathways_list)
+s_data<- ScaleData(s_data,assay = "escape_hallnark")
+
+
+s_data <- runEscape(s_data,groups = 10000, BPPARAM =BiocParallel::bpparam() ,
+                        method = "ssGSEA",
+                        gene.sets = keggplus_pathways_list, 
+                        min.size = 5,
+                        new.assay.name = "escape_keggplus")
+
+s_data <- performNormalization(sc.data = s_data, 
+                                   assay = "escape_keggplus", 
+                                   gene.sets = keggplus_pathways_list)
+s_data<- ScaleData(s_data,assay = "escape_keggplus")
+
+
+s_data <- runEscape(s_data,groups = 10000, BPPARAM =BiocParallel::bpparam() ,
+                        method = "ssGSEA",
+                        gene.sets = reactome_pathways_list, 
+                        min.size = 5,
+                        new.assay.name = "escape_reactome")
+
+s_data <- performNormalization(sc.data = s_data, 
+                                   assay = "escape_reactome", 
+                                   gene.sets = reactome_pathways_list)
+s_data<- ScaleData(s_data,assay = "escape_reactome")
+
+
+
+saveRDS(s_data,file = "~/Projects/Meyer/Data/s_data_escape.rds")
+```
+
+```{r}
+s_data<-readRDS(file = "~/Projects/Meyer/Data/s_data_escape.rds")
+
+c5<- subset(s_data,group3=="HSCP-MPP_c5")
+Idents(c5)<-"Treatment"
+DefaultAssay(c5)<-"escape_keggplus_normalized"
+kegg_plus_results<-FindMarkers(c5,ident.1 = "PAM",ident.2 = "PBS",min.pct=0,logfc.threshold=0)%>%
+        data.frame%>%
+        tibble::rownames_to_column(var = "Pathway")%>%
+        mutate(Score=-log10(p_val_adj)*sign(avg_log2FC))%>%
+        arrange(desc(abs(Score)))#%>%
+        filter(grepl("SENESCENCE|EMBRYONIC",Pathway))
+write.csv(kegg_plus_results,file = "~/Projects/Meyer/TLR/Results/2024/December/12_17_2024/Kegg_results_c5_PAM-vs-PBS.csv")     
+
+```
+
+
+```{r}
+ssGSEA_out<-data.frame(s_data@meta.data,t(s_data@assays$escape.ssGSEA_c2ALL@scale.data))
+
+ggplot(ssGSEA_out,aes(x=URD_pseuodtime[,1],y=VALK.AML.WITH.FLT3.ITD,group=Treatment,color=Treatment))+geom_smooth()
+ggplot(ssGSEA_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=GAL.LEUKEMIC.STEM.CELL.UP,group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+            new_scale_color() +
+          geom_rug(aes(color=group3),sides = "b",alpha=0.2)+
+          scale_color_manual(values = color_scheme)+
+          theme_classic(base_size = 14)
+
+ggplot(ssGSEA_out,aes(x=URD_pseuodtime[,1],y=1,color=group3))+geom_point()
+
+HALLMARK.E2F.TARGETS
+ggplot(ssGSEA_out,aes(x=URD_pseuodtime[,1],y=HALLMARK.ALLOGRAFT.REJECTION,group=Treatment,color=Treatment))+geom_smooth()
+ggplot(ssGSEA_out,aes(x=URD_pseuodtime[,1],y=HALLMARK.G2M.CHECKPOINT,group=Treatment,color=Treatment))+geom_smooth()
+```
+
+```{r}
+HSPC_enriched<- grep("HSCP|Pro|granu|myeloid|Myeloid_progenitor_[AB]",levels(s_data$group3)[10:21],value = T)
+s_data_HSPC<-subset(s_data,group3%in%HSPC_enriched)
+
+s_data_HSPC_PBS<-subset(s_data,group3%in%HSPC_enriched&Treatment=="PBS")
+
+
+Idents(s_data_HSPC_PBS)<-"group3_rev"
+
+all.markers <- FindAllMarkers(s_data_HSPC_PBS, 
+                              assay = "escape.ssGSEA_HALLNARK", 
+                              min.pct = 0,
+                              logfc.threshold = 0)
+
+all.markers%>%group_by(cluster)%>%slice(1:15)
+
+gene_sets<-s_data_HSPC@assays$escape.ssGSEA_HALLNARK%>%rownames()
+ggsave(heatmapEnrichment(s_data_HSPC, group.by = "Treatment",cluster.rows = T,
+                  facet.by = "group3_rev",scale=T,
+                  gene.set.use =gene_sets[1:50],
+                  assay = "escape.ssGSEA_HALLNARK"),
+       file=paste0(save_folder,"/HALLMARK_HSPC.pdf"),height = 15,width = 10)
+
+
+mature_enriched<- levels(s_data$group3)[c(2:3,5:9)]
+s_data_mature<-subset(s_data,group3%in%mature_enriched)
+
+ggsave(heatmapEnrichment(s_data_mature, group.by = "Treatment",cluster.rows = T,
+                  facet.by = "group3_rev",scale=T,
+                  gene.set.use =gene_sets[1:50],
+                  assay = "escape.ssGSEA_HALLNARK"),
+       file=paste0(save_folder,"/HALLMARK_mature.pdf"),height = 15,width = 10)
+
+
+geyserEnrichment(s_data_HSPC, group.by = "Treatment",
+                 assay = "escape.ssGSEA_HALLNARK_normalized",
+                 gene.set = "HALLMARK-INTERFERON-GAMMA-RESPONSE", 
+                 facet.by = "group3_rev")+facet_wrap(~group3_rev,scales = "free")
+
+
+```
+
+

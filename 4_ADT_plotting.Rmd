@@ -1,0 +1,133 @@
+---
+title: "Protein analysis"
+output: html_document
+date: "2024-07-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_10_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+
+```
+
+```{r HSPC dotplot}
+Seurat::DefaultAssay(s_data)<-"ADT"
+Idents(s_data)<-"group3"
+HSPC_enriched<- levels(s_data$group3)[10:21]
+HSPC_ADT<-DotPlot(s_data,features =c( "STREP-TotalA", "CD117-TotalA", "CD34-TotalA","LY6A-TotalA" , "CD16-TotalA"),                           split.by = "Treatment",
+                          idents = HSPC_enriched,
+                          scale = T,
+                          scale.by = "size",
+                          assay = "ADT",
+                          cols ="RdBu" )+RotatedAxis()
+
+HSPC_ADT_Vln<-VlnPlot(s_data,split.by = "Treatment", idents = (HSPC_enriched),
+                      pt.size = 0.0,ncol = 2,cols = c("grey80",brewer.pal(n=5,name="Reds")[5]),
+        features =c( "STREP-TotalA", "CD117-TotalA", "CD34-TotalA","LY6A-TotalA" , "CD16-TotalA"),
+        )
+
+ggsave(plot=HSPC_ADT,
+               filename = paste0(save_folder,"/HSPC_ADT_dotplot.pdf"),
+       width = 6.4,
+       height = 6.4
+        )
+
+
+ggsave(plot=HSPC_ADT_Vln,
+                      filename = paste0(save_folder,"/HSPC_ADT_Vln.pdf"),
+       width = 15,
+       height = 15
+        )
+```
+
+
+```{r mature dotplot}
+Seurat::DefaultAssay(s_data)<-"ADT"
+Idents(s_data)<-"group3"
+mature_enriched<- levels(s_data$group3)[2:10]
+mature_ADT<-DotPlot(s_data,,features =c( "STREP-TotalA", 
+                          "F4-80-TotalA",  "LY6G-TotalA" ,"IA-TotalA"  , "CD86-TotalA", "CD80-TotalA" ),
+                          split.by	 = "Treatment",
+                          idents = (mature_enriched),
+                          scale = T,
+                          scale.by = "radius",
+                          assay = "ADT",
+                          cols ="RdBu" )+RotatedAxis()
+
+mature_ADT_Vln<-VlnPlot(s_data,split.by = "Treatment", idents = (mature_enriched),
+                       pt.size = 0.0,ncol = 2,cols = c("grey80",brewer.pal(n=5,name="Reds")[5]),
+                        features =c( "STREP-TotalA",  "F4-80-TotalA",  "LY6G-TotalA" ,
+                                     "IA-TotalA"  , "CD86-TotalA", "CD80-TotalA" ),
+        )
+
+ggsave(plot=mature_ADT,
+        filename = paste0(save_folder,"/mature_ADT_dotplot.pdf"),
+       width = 6.4,
+       height = 6.4
+        )
+
+ggsave(plot=mature_ADT_Vln,
+        filename = paste0(save_folder,"/mature_ADT_Vln.pdf"),
+       width = 15,
+       height = 15
+        )
+```

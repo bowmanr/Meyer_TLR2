@@ -1,0 +1,232 @@
+---
+title: "Cellular Abundance"
+output: html_document
+date: "2023-02-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_10_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[-9],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+
+```
+
+```{r umap all}
+
+UMAP_all<-ggplot(s_data@meta.data%>%
+                  arrange(group3,descending=TRUE),
+       aes(x=UMAP_1_all,
+           y=UMAP_2_all,
+           color=group3)) +
+         #  color=as.numeric(pseudotime[,1]))) +
+  geom_point_rast(size=0.25,alpha=1)+
+  xlab("UMAP X")+
+  ylab("UMAP Y")+
+  scale_color_manual(values=color_scheme,
+                     guide = guide_legend(reverse=T,override.aes = list(size = 3,
+                                                            alpha = 1)),"ICSG2 Cell Type") +    
+    theme_classic(base_size = 14)#+
+
+ggsave(plot=UMAP_all,
+     filename = paste0(save_folder,"/UMAP_all_rastr.pdf"),
+       width = 9,
+       height = 5
+        )
+```
+
+```{r umap split}
+UMAP_split<-ggplot(s_data@meta.data%>%
+                    arrange(group3,descending=TRUE),
+       aes(x=UMAP_1_all,
+           y=UMAP_2_all,
+           color=group3))+
+#  rasterise(geom_point(size=0.2,alpha=0.5), dpi = 750, scale = 1)+
+   geom_point_rast(size=0.2,alpha=0.5)+
+  xlab("UMAP X")+
+  ylab("UMAP Y")+
+  scale_color_manual(values=color_scheme,
+                     guide = guide_legend(reverse=T,
+                                          override.aes = list(size = 3,
+                                                              alpha = 1)),
+                     "ICSG2 Cell Type") +    
+  theme_classic(base_size = 14)+
+  theme(legend.text = element_text(size=8))+
+  facet_wrap(~Treatment,ncol=2)
+
+UMAP_LY6A<-ggplot(s_data@meta.data,
+       aes(x=UMAP_1_all,
+           y=UMAP_2_all,
+           color=LY6A.TotalA))+
+  geom_point_rast(size=0.2,alpha=0.5)+
+  xlab("UMAP X")+
+  ylab("UMAP Y")+
+  scale_color_distiller(type = "div",palette = "RdYlBu",
+                        "LY6A Protein")+   
+  theme_classic(base_size = 16)+
+  facet_wrap(~Treatment,ncol=2)
+
+ggsave(plot=cowplot::plot_grid(UMAP_split,UMAP_LY6A,ncol=1,axis = "ltrb",align='hv'),
+       filename = paste0(save_folder,"/UMAP_split_LY6A.pdf"),
+       width = 10,
+       height = 8
+        )
+
+
+```
+
+```{r barplot all frequency}
+gg_barplot<-ggplot(s_data@meta.data,
+       aes(x=Treatment,
+           fill=group3))+
+    geom_bar(position="fill",stat="count",)+
+    xlab("Treatment")+ylab("Fraction of Sample")+
+    scale_y_continuous(expand=c(0,0))+
+    theme_classic(base_size=14)+
+    scale_fill_manual("ICSG2 Cell Type",
+                      values=color_scheme,
+                      guide = guide_legend(reverse=F,
+                                          ncol = 1,
+                                          override.aes = list(size = 2,
+                                                              alpha = 1)))
+
+ggsave(plot=gg_barplot,
+       filename = paste0(save_folder,"/barplot_celltype.pdf"),
+       width = 6,
+       height = 6
+        )
+
+```
+
+```{r barplot HSPC }
+HSPC_enriched<-s_data@meta.data%>%
+                  filter(grepl("HSPC",orig.ident))%>%
+                  count(group3)%>%
+                  filter(n>25)%>%
+                  pull(group3)
+
+barplot_HSPC_relabel<-ggplot(s_data@meta.data%>%
+                  filter(grepl("HSPC",orig.ident))%>%
+                  filter(group3%in%HSPC_enriched) ,
+           aes(x=Treatment,
+               fill=forcats::fct_rev(group3)))+
+    geom_bar(position="fill",stat="count")+
+    xlab("Treatment")+ylab("Fraction of Sample")+
+    scale_y_continuous(expand=c(0,0))+
+    scale_fill_manual(values=color_scheme,labels=(labels = function(x) stringr::str_wrap(x, width = 20)),
+                     guide = guide_legend(ncol=1),"ICSG2 Cell Type" ) +    
+    theme_classic(base_size=24)+
+    theme(legend.position = "right",
+          legend.text = element_text(size=16))
+
+
+ggsave(plot=barplot_HSPC_relabel,
+      filename = paste0(save_folder,"/barplot_celltype_HSPC.pdf"),
+       width = 6.4,
+       height = 6.4
+        )
+```
+
+```{r barplot mature }
+mature_enriched<-s_data@meta.data%>%
+                  filter(grepl("mature",orig.ident))%>%
+                  count(group3)%>%
+                  filter(n>50)%>%
+                  pull(group3)
+
+barplot_mature_relabel<-ggplot(s_data@meta.data%>%
+                  filter(grepl("mature",orig.ident))%>%
+                  filter(group3%in%mature_enriched) ,
+           aes(x=Treatment,
+               fill=forcats::fct_rev(group3)))+
+    geom_bar(position="fill",stat="count")+
+    xlab("Treatment")+ylab("Fraction of Sample")+
+    scale_y_continuous(expand=c(0,0))+
+    scale_fill_manual(values=color_scheme,labels=(labels = function(x) stringr::str_wrap(x, width = 20)),
+                     guide = guide_legend(ncol=1),"ICSG2 Cell Type" ) +    
+    theme_classic(base_size=24)+
+    theme(legend.position = "right",
+          legend.text = element_text(size=16))
+
+
+ggsave(plot=barplot_mature_relabel,
+             filename = paste0(save_folder,"/barplot_celltype_mature.pdf"),
+       width = 6.4,
+       height = 6.4
+        )
+```
+
+```{r cell cycle}
+gg_cell_cycle<-ggplot(s_data@meta.data%>%
+                     mutate(Phase=factor(Phase,levels=c("G1","S","G2M"))),
+                   aes(x=Treatment,
+                       fill=Phase))+
+                  geom_bar(position = "fill")+
+                  scale_fill_brewer(name="Blues")+
+                  facet_wrap(~group3,scale="free_y")+
+                  theme_classic(base_size=10)+
+                  theme(axis.text.x=element_text(angle=45,hjust=1))
+
+ggsave(plot=gg_cell_cycle,
+                    filename = paste0(save_folder,"/gg_cell_cycle.pdf"),
+       width = 10,
+       height = 6.4
+        )
+```

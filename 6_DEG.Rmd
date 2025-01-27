@@ -1,0 +1,218 @@
+---
+title: "TLR2 scRNA DEG lists"
+output: html_document
+date: "2024-05-10"
+---
+
+# loading data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_26_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"RNA"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+s_data@meta.data$group3_rev<-factor(s_data@meta.data$group3,levels=c(rev(final_order)))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+```
+
+
+# DEGs
+```{r DEG by population}
+Idents(s_data)<-"group3"
+cell_types<-levels(s_data$group3)
+
+sort(setdiff(rownames(s_data@assays$RNA),rownames(s_data@assays$SCT)))
+
+DEG_results<-lapply(cell_types,function(cell){
+s_data.subset <- subset(s_data, idents = c(cell))
+if(all(table(s_data.subset$Treatment)>5)){
+  print(cell)
+  FindMarkers(s_data.subset, assay = "SCT",
+              ident.1 = "PAM",ident.2 = "PBS",
+              recorrect_umi = FALSE,
+              group.by = "Treatment")
+}
+})
+names(DEG_results)<- cell_types
+DEG_results<-DEG_results[!sapply(DEG_results,is.null)]
+
+
+
+p_value_cut<-0.05
+fc_cut<- 0
+
+up_genes<-lapply(DEG_results,function(cell){
+            out<-cell%>%filter(p_val_adj<p_value_cut&avg_log2FC>fc_cut)%>%rownames
+            if(length(out)>0){
+              return(out)
+            } else{
+              return(NULL)
+            }
+            })
+up_genes<-up_genes[!sapply(up_genes,is.null)]
+
+down_genes<-lapply(DEG_results,function(cell){
+            out<-cell%>%filter(p_val_adj<p_value_cut&avg_log2FC<(-fc_cut))%>%rownames
+                      if(length(out)>0){
+              return(out)
+            } else{
+              return(NULL)
+            }
+            })
+down_genes<-down_genes[!sapply(down_genes,is.null)]
+
+
+DEG_results_up_sig<-lapply(DEG_results,function(cell){
+            out<-cell%>%filter(p_val_adj<p_value_cut&avg_log2FC>fc_cut)
+            if(length(out)>0){
+              return(out)
+            } else{
+              return(NULL)
+            }
+            })
+DEG_results_up_sig<-DEG_results_up_sig[!sapply(DEG_results_up_sig,is.null)]
+
+
+DEG_results_down_sig<-lapply(DEG_results,function(cell){
+           out<- cell%>%filter(p_val_adj<p_value_cut&avg_log2FC<(-fc_cut))
+                       if(length(out)>0){
+              return(out)
+            } else{
+              return(NULL)
+            }
+            })
+DEG_results_down_sig<-DEG_results_down_sig[!sapply(DEG_results_down_sig,is.null)]
+
+
+
+```
+
+```{r upset Up genes}
+library(ggupset)
+
+
+summarized_DEG_up<-do.call(rbind,lapply(names(up_genes),function(cell_name){
+             data.frame("Cell"=rep(cell_name,length(up_genes[cell_name])),
+                        "Gene"=up_genes[cell_name][[1]])
+}))%>%
+      group_by(Gene) %>%
+      summarize(Cell = list(Cell))%>%
+      rowwise()%>%
+      mutate(set_count=length(Cell))
+
+gg_KO_up<-summarized_DEG_up%>% 
+              ggplot(aes(x = Cell)) +
+              geom_bar(fill=brewer.pal(n=5,name="Blues")[5]) +
+              scale_x_upset()+
+              scale_y_continuous(expand=c(0,0))+
+              xlab(" Gene Set Overlaps")+
+              ylab("\n 
+                     Gene Count")+
+              ggtitle("Upregulated Genes in KO")+
+              theme_minimal(base_size = 12)+
+                    theme(plot.title = element_text(hjust=0.5))
+
+```
+
+```{r upset Down genes}
+summarized_DEG_down<-do.call(rbind,lapply(names(down_genes),function(cell_name){
+            if(length(down_genes[cell_name][[1]])>0){
+             data.frame("Cell"=rep(cell_name,length(down_genes[cell_name])),
+                        "Gene"=down_genes[cell_name][[1]])
+            }
+}))%>%
+      group_by(Gene) %>%
+      summarize(Cell = list(Cell))%>%
+      rowwise()%>%
+      mutate(set_count=length(Cell))
+
+gg_KO_down<-summarized_DEG_down%>% 
+              ggplot(aes(x = Cell)) +
+              geom_bar(fill=brewer.pal(n=5,name="Blues")[5]) +
+              scale_x_upset()+
+              scale_y_continuous(expand=c(0,0))+
+              xlab(" Gene Set Overlaps")+
+              ylab("\n 
+                     Gene Count")+
+              ggtitle("Upregulated Genes in KO")+
+              theme_minimal(base_size = 12)+
+                    theme(plot.title = element_text(hjust=0.5))
+
+```
+
+```{r export DEGs}
+library(writexl)
+
+DEG_annotated<-lapply(names(DEG_results),function(cell){
+  DEG_results[[cell]]%>%tibble::rownames_to_column(var="Gene")%>%
+  mutate(Group=case_when(
+      Gene%in%up_genes[[cell]]~"Up in PAM",
+      Gene%in%down_genes[[cell]]~"Down in PAM",
+      TRUE~"not sig"
+    ))%>%
+  mutate(presence=case_when(
+    pct.1>0.5&pct.2<0.2~"enriched in PAM",
+    pct.1<0.2&pct.2>0.5~"depleted in PAM",
+    TRUE~"Other"
+  ))
+})
+names(DEG_annotated)<-names(DEG_results)
+write_xlsx(DEG_annotated,paste0(save_folder,"/DEGs_SCT_noFCcut_0.05_padj.xlsx"))
+
+```

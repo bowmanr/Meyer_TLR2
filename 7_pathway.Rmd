@@ -1,0 +1,225 @@
+---
+title: "TLR2 scRNA DEG lists"
+output: html_document
+date: "2024-05-10"
+---
+
+# loading data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/December/12_17_2024/'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+s_data@meta.data$group3_rev<-factor(s_data@meta.data$group3,levels=c(rev(final_order)))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+```
+
+## Gene set scoring with ULM-MLM
+```{r setup Gene set scoring with ULM-MLM}
+library(msigdbr)
+library(decoupleR)
+library(writexl)
+decoupler_wrapper<-function(suerat_obj,organism,model,net,name){
+  mat_normed<-as.matrix(suerat_obj@assays$RNA$data)
+  rownames(mat_normed)<-rownames(suerat_obj@assays$RNA)
+  colnames(mat_normed)<-colnames(suerat_obj@assays$RNA)
+  if(model=="TF"){
+  net <- get_collectri(organism=organism, split_complexes=FALSE)
+  acts_norm <- run_ulm(mat=mat_normed, net=net, .source='source', .target='target',
+                       .mor='mor', minsize = 5)
+  suerat_obj[['tfsulm']] <- acts_norm %>%
+    tidyr::pivot_wider(id_cols = 'source', names_from = 'condition',
+                       values_from = 'score') %>%
+    tibble::column_to_rownames('source') %>%
+    Seurat::CreateAssayObject(.)
+  DefaultAssay(object = suerat_obj) <- "tfsulm"
+  suerat_obj <- Seurat::ScaleData(suerat_obj)
+  suerat_obj@assays$tfsulm@data <- suerat_obj@assays$tfsulm@scale.data
+  return(suerat_obj)
+  }
+  if(model=="progeny"){
+  net <- decoupleR::get_progeny(organism =organism, top = 500)
+  acts_norm <- run_mlm(mat=mat_normed, net=net, .source='source', .target='target',
+                       .mor='weight', minsize = 5)
+  suerat_obj[['progeny']] <- acts_norm %>%
+    tidyr::pivot_wider(id_cols = 'source', names_from = 'condition',
+                       values_from = 'score') %>%
+    tibble::column_to_rownames('source') %>%
+    Seurat::CreateAssayObject(.)
+  DefaultAssay(object = suerat_obj) <- "progeny"
+  suerat_obj <- Seurat::ScaleData(suerat_obj)
+  suerat_obj@assays$progeny@data <- suerat_obj@assays$progeny@scale.data
+  return(suerat_obj)
+  }
+  if(model=="hallmark"){
+  net <- msigdbr::msigdbr(species = organism,category = "H")%>%
+      select(source=gs_name,target=gene_symbol)%>%
+      mutate(weight=1)%>%distinct()
+  acts_norm <- run_mlm(mat=mat_normed, net=net, .source='source', .target='target',
+                        minsize = 5)
+  suerat_obj[['hallmark']] <- acts_norm %>%
+    tidyr::pivot_wider(id_cols = 'source', names_from = 'condition',
+                       values_from = 'score') %>%
+    tibble::column_to_rownames('source') %>%
+    Seurat::CreateAssayObject(.)
+  DefaultAssay(object = suerat_obj) <- "hallmark"
+  suerat_obj <- Seurat::ScaleData(suerat_obj)
+  suerat_obj@assays$hallmark@data <- suerat_obj@assays$hallmark@scale.data
+  return(suerat_obj)
+  }
+}
+
+```
+
+# pathway scoring
+```{r TF}
+s_data<-decoupler_wrapper(s_data,organism = "mouse",model = "TF")
+
+DefaultAssay(s_data)<-"tfsulm"
+Idents(s_data)<-"group3"
+cell_types<- levels(Idents(s_data))
+
+TF_resuls<-lapply(cell_types,function(cell){
+  print(cell)
+  tally<-s_data@meta.data%>%
+        filter(group3==cell)%>%
+        group_by(Treatment)%>%
+        summarize(n=n())%>%
+        pull(n)
+
+  if(all(tally>5)){
+  return(FindMarkers(s_data,ident.1 = "PAM",ident.2 = "PBS",subset.ident = cell,group.by="Treatment")%>%
+  data.frame%>%
+  tibble::rownames_to_column(var="Factor"))
+  } else{
+    return(data.frame(x="not enough cells"))
+  }
+})
+
+names(TF_resuls)<-cell_types
+write_xlsx(TF_resuls,paste0(save_folder,"/TF_resuls.xlsx"))
+
+```
+
+```{r Progeny}
+s_data<-decoupler_wrapper(s_data,organism = "mouse",model = "progeny")
+
+DefaultAssay(s_data)<-"progeny"
+Idents(s_data)<-"group3"
+cell_types<- levels(Idents(s_data))
+
+progeny_resuls<-lapply(cell_types,function(cell){
+  print(cell)
+  tally<-s_data@meta.data%>%
+        filter(group3==cell)%>%
+        group_by(Treatment)%>%
+        summarize(n=n())%>%
+        pull(n)
+
+  if(all(tally>5)){
+  return(FindMarkers(s_data,ident.1 = "PAM",ident.2 = "PBS",subset.ident = cell,group.by="Treatment")%>%
+  data.frame%>%
+  tibble::rownames_to_column(var="Factor"))
+  } else{
+    return(data.frame(x="not enough cells"))
+  }
+})
+
+names(progeny_resuls)<-cell_types
+write_xlsx(progeny_resuls,paste0(save_folder,"/progeny_resuls.xlsx"))
+
+```
+
+```{r Hallmark}
+s_data<-decoupler_wrapper(s_data,organism = "mouse",model = "hallmark")
+
+DefaultAssay(s_data)<-"hallmark"
+Idents(s_data)<-"group3"
+cell_types<- levels(Idents(s_data))
+
+hallmark_resuls<-lapply(cell_types,function(cell){
+  print(cell)
+  tally<-s_data@meta.data%>%
+        filter(group3==cell)%>%
+        group_by(Treatment)%>%
+        summarize(n=n())%>%
+        pull(n)
+
+  if(all(tally>5)){
+  return(FindMarkers(s_data,ident.1 = "PAM",ident.2 = "PBS",subset.ident = cell,group.by="Treatment",min.cells.feature=0)%>%
+  data.frame%>%
+  tibble::rownames_to_column(var="Factor"))
+  } else{
+    return(data.frame(x="not enough cells"))
+  }
+})
+
+names(hallmark_resuls)<-cell_types
+write_xlsx(hallmark_resuls,paste0(save_folder,"/hallmark_resuls.xlsx"))
+```
+
+```{r}
+
+saveRDS(object = s_data,file = paste0(save_folder,"/s_data_TFAA.rds"))
+```
+
+
+

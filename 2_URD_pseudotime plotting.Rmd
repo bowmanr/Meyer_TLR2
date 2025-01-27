@@ -1,0 +1,154 @@
+---
+title: "Cellular Abundance"
+output: html_document
+date: "2023-02-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_10_2024'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+
+```
+
+```{r pseudotime plotting}
+library(ggridges)
+URD_Pseudo_ridge<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=URD_pseuodtime[,1],
+           y=group3,
+           fill=group3)) +
+  stat_density_ridges(alpha=0.8,stat="count")+
+  xlab("Pseudotime URD")+
+  ylab("")+
+  scale_fill_manual(values=color_scheme,
+                     "ICSG2 Cell Type") +    
+  guides(fill="none")+
+    theme_classic(base_size = 14)#+
+
+ggsave(plot=URD_Pseudo_ridge,
+          filename = paste0(save_folder,"/URD_Pseudo_ridge.pdf"),
+       width = 6,
+       height = 8
+        )
+
+URD_Pseudo_ridge_faceted<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=URD_pseuodtime[,1],
+           y=group3,
+           fill=group3)) +
+  stat_density_ridges(alpha=0.8,stat="count")+
+  xlab("Pseudotime URD")+
+  ylab("")+
+  facet_grid(.~Treatment)+
+  scale_fill_manual(values=color_scheme,
+                     "ICSG2 Cell Type") +    
+    theme_classic(base_size = 14)#+
+
+ggsave(plot=URD_Pseudo_ridge_faceted,
+        filename = paste0(save_folder,"/URD_Pseudo_ridge_faceted.pdf"),
+       width = 10,
+       height = 8
+        )
+
+
+URD_Pseudo_ridge_split<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=URD_pseuodtime[,1],
+           y=group3,
+           fill=Treatment)) +
+  stat_density_ridges(alpha=0.3,stat="count")+
+  xlab("Pseudotime URD")+
+  ylab("")+
+  scale_fill_manual(values=c("PBS"="grey50","PAM"=brewer.pal(n=5,name = "Reds")[5]),
+                     "Treatment") +    
+  #guides(fill="none")+
+  theme_classic(base_size = 14)+
+  theme(strip.background = element_blank())
+
+ggsave(plot=URD_Pseudo_ridge_split,
+      filename = paste0(save_folder,"/URD_Pseudo_ridge_split.pdf"),
+       width = 6,
+       height = 8
+        )
+```
+
+
+```{r pseudotime violin}
+library(ggridges)
+URD_Pseudo_ridge<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=URD_pseuodtime[,1],
+           y=group3,
+           fill=Treatment)) +
+  geom_violin()+
+  xlab("Pseudotime URD")+
+  ylab("")+
+ # scale_fill_manual(values=) +    
+  guides(fill="none")+
+    theme_classic(base_size = 14)#+
+
+ggsave(plot=URD_Pseudo_ridge,
+      filename = paste0(save_folder,"/URD_Pseudo_ridge.pdf"),
+       width = 6,
+       height = 8
+        )
+```

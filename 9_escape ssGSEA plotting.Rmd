@@ -1,0 +1,526 @@
+---
+title: "TLR2 scRNA DEG lists"
+output: html_document
+date: "2024-05-10"
+---
+
+# loading data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/December/12_17_2024/'
+```
+
+```{r data setup initial phase}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+library(msigdbr)
+library(nichenetr)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/s_data_escape.rds")
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+color_scheme_rev<-rev(color_scheme)
+
+
+addSmallLegend <- function(myPlot, pointSize = 0.75, textSize = 8, spaceLegend = 0.1) {
+  myPlot +
+    guides(shape = guide_legend(override.aes = list(size = pointSize)),
+           color = guide_legend(override.aes = list(size = pointSize))) +
+    theme(legend.title = element_text(size = textSize), 
+          legend.text  = element_text(size = textSize),
+          legend.key.size = unit(spaceLegend, "lines"))
+}
+
+addSmallLegend_bar <- function(myPlot, pointSize = 1.5, textSize = 8, spaceLegend = 0.1) {
+  myPlot +
+    guides(shape = guide_legend(override.aes = list(size = pointSize)),
+           fill = guide_legend(override.aes = list(size = pointSize),reverse = TRUE)) +
+    theme(legend.title = element_text(size = textSize), 
+          legend.text  = element_text(size = textSize),
+          legend.key.size = unit(spaceLegend, "lines"))
+}
+```
+
+```{r pathway selection}
+hallmark_pathways_list <- msigdbr("mouse", category="H")
+hallmark_pathways_list <- split(hallmark_pathways_list$gene_symbol, 
+                                hallmark_pathways_list$gs_name)
+
+keggplus_pathways_list <- msigdbr("mouse", category="C2")%>%
+                            filter(grepl("KEGG|TLR|HEMATO|LEUKEM|MYELOID|_STEM|STEMCELL",
+                                        gs_name))
+keggplus_pathways_list <- split(keggplus_pathways_list$gene_symbol, 
+                                keggplus_pathways_list$gs_name)
+
+reactome_pathways_list <- msigdbr("mouse", category="C2")%>%
+                           filter(grepl("REACTOME",gs_name))
+reactome_pathways_list <- split(reactome_pathways_list$gene_symbol, 
+                                reactome_pathways_list$gs_name)
+```
+
+```{r heatmap of PBS treated cells for stemness signatures}
+ssGSEA_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_keggplus@scale.data))
+
+gene_sets_of_interest<-c("IVANOVA.HEMATOPOIESIS.STEM.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.MATURE.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.EARLY.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.INTERMEDIATE.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.LATE.PROGENITOR",
+                                                    "JAATINEN.HEMATOPOIETIC.STEM.CELL.UP",
+                                                    "BROWN.MYELOID.CELL.DEVELOPMENT.UP",
+                                                    "GAL.LEUKEMIC.STEM.CELL.UP")
+
+ssGSEA_out%>%
+      select(group3_rev,Treatment,all_of(gene_sets_of_interest))%>%
+      tidyr::pivot_longer( cols =-c(group3_rev,Treatment),names_to = "Pathway",values_to = "Score"
+                          )%>%
+      group_by(group3_rev,Treatment,Pathway)%>%
+      summarise(med_value=median(Score))%>%
+      filter(Treatment=="PBS")%>%
+      filter(group3_rev!="Other")%>%
+      ungroup()%>%
+      tidyheatmaps::tidy_heatmap(rows = Pathway,columns = group3_rev,values = med_value,scale = "row",
+                                 colors =viridis::magma(n=50),
+                                 cluster_rows = T,treeheight_row = 0,angle_col = 45,
+                                 cellheight = 6,cellwidth =6,fontsize = 5,
+                                 filename = paste0(save_folder,"stemness_heatmap.pdf"),width = 5,height = 4)
+```
+
+
+```{r HSPC c5 volcano}
+library(readxl)
+library(ggrastr)
+library(ggrepel)
+c5_DEG<-readxl::read_xlsx(path = "/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/DEGs.xlsx",sheet = "HSCP-MPP_c5")%>%data.frame
+
+
+volcano<-ggplot(c5_DEG,aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group))+
+              geom_point_rast()+
+              theme_minimal(base_size = 16)+
+              theme(axis.line = element_line())+
+              scale_color_manual(values=c("Down in PAM"="dodgerblue4",
+                                          "Up in PAM"=brewer.pal(n=5,name="Reds")[5],
+                                          "not sig"="grey70"))+
+              guides(color="none")+
+              scale_y_continuous(expand=c(0,0))+
+              scale_x_continuous(limits = c(-3,5))+
+            ggrepel::geom_label_repel(data=c5_DEG%>%
+                                          filter(Group!="not sig"),
+                                      aes(x=avg_log2FC,y=-log10(p_val_adj),color=Group,label=Gene))
+       
+ggsave(volcano,filename=paste0(save_folder,"HSPC_c5_volcano_Antigen.pdf"),width=8,height=16)
+       
+```
+
+```{r HSPC c5 gene violins plotting}
+library(msigdbr)
+c5_DEG<-readxl::read_xlsx(path = "/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/DEGs.xlsx",sheet = "HSCP-MPP_c5")%>%data.frame
+s_data<- NormalizeData(s_data,assay = "RNA")
+s_data_SCT_out<-data.frame(s_data@meta.data,t(s_data@assays$RNA@data))
+keggplus_pathways <- msigdbr("mouse", category="C2")%>%
+                           filter(grepl("KEGG|TLR|HEMATO|LEUKEM|MYELOID|_STEM|STEMCELL",gs_name))
+keggplus_pathways_list <- split(keggplus_pathways$gene_symbol, keggplus_pathways$gs_name)
+kegg_Antigen<-keggplus_pathways_list$KEGG_ANTIGEN_PROCESSING_AND_PRESENTATION
+hallmark_ifng<-hallmark_pathways_list$HALLMARK_INTERFERON_GAMMA_RESPONSE
+hallmark_allograft<-hallmark_pathways_list$HALLMARK_ALLOGRAFT_REJECTION
+stem<-unique(Reduce(union,list(keggplus_pathways_list$GAL_LEUKEMIC_STEM_CELL_UP,
+            keggplus_pathways_list$IVANOVA_HEMATOPOIESIS_EARLY_PROGENITOR,
+            keggplus_pathways_list$IVANOVA_HEMATOPOIESIS_STEM_CELL,
+            keggplus_pathways_list$IVANOVA_HEMATOPOIESIS_MATURE_CELL)))
+
+genes_of_interest<-gsub("-",".",intersect(kegg_Antigen,c5_DEG%>%filter(Group!="not sig")%>%pull(Gene)))
+genes_of_interest<-gsub("-",".",intersect(hallmark_ifng,c5_DEG%>%filter(Group!="not sig")%>%pull(Gene)))
+genes_of_interest<-gsub("-",".",intersect(hallmark_allograft,c5_DEG%>%filter(Group!="not sig")%>%pull(Gene)))
+genes_of_interest<-gsub("-",".",intersect(stem,c5_DEG%>%filter(Group!="not sig")%>%pull(Gene)))
+genes_of_interest<-intersect(genes_to_intersec,c5_DEG%>%filter(Group!="not sig")%>%pull(Gene))
+
+
+genes_of_interest<- c("Psmb8","Psmb9","Psmb10",
+                       "Tap1","Tap2",
+                       "Il27ra","Cd74","Ifnar2","Pim1",
+                       "Stat3",'Ciita',"Fbxo9")
+
+violin_out<-s_data_SCT_out%>%
+      select(group3_rev,Treatment,all_of(genes_of_interest))%>%
+      tidyr::pivot_longer( cols =-c(group3_rev,Treatment),names_to = "Gene",values_to = "Expression"
+                          )%>%
+      filter(group3_rev=="HSCP-MPP_c5")%>%
+      mutate(Gene=factor(Gene,level=genes_of_interest))%>%
+      ggplot(aes(x=Treatment,y=Expression,fill=Treatment))+
+            geom_violin()+geom_jitter_rast(size=0.01,alpha=0.2)+
+            facet_wrap(~Gene,ncol = 4,scale="free")+
+            scale_fill_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+            theme_classic(base_size = 10)+
+            guides(fill="none")+
+            ylab("SCT normalized expression")+
+            xlab("")+
+            theme(strip.background = element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.ticks.x = element_blank())
+
+ggsave(violin_out,filename=paste0(save_folder,"HSPC_c5_violin_curated-norm_rast.pdf"),width=4,height=3)
+```
+
+
+```{r hallmark differential enrichment c5}
+c5<- subset(s_data,group3=="HSCP-MPP_c5")
+Idents(c5)<-"Treatment"
+DefaultAssay(c5)<-"escape_hallnark_normalized"
+hallmark_results<-FindMarkers(c5,ident.1 = "PAM",ident.2 = "PBS",min.pct=0,logfc.threshold=0)%>%
+        data.frame%>%
+        tibble::rownames_to_column(var = "Pathway")%>%
+        mutate(Score=-log10(p_val_adj)*sign(avg_log2FC))%>%
+        arrange(desc(abs(Score)))%>%
+        slice(1:13)%>%
+        arrange(Score)%>%
+        mutate(Pathway=gsub("HALLMARK","H",Pathway))%>%
+        mutate(Pathway=gsub("-"," ",Pathway))
+
+DefaultAssay(c5)<-"escape_keggplus_normalized"
+
+gene_set_of_interest_2<-c("KEGG.ANTIGEN.PROCESSING.AND.PRESENTATION")
+keggplus_results<-FindMarkers(c5,ident.1 = "PAM",ident.2 = "PBS",min.pct=0,logfc.threshold=0)%>%
+                      data.frame%>%
+                      tibble::rownames_to_column(var = "Pathway")%>%
+                      mutate(Score=-log10(p_val_adj)*sign(avg_log2FC))%>%
+                      arrange(desc(abs(Score)))%>%
+                      mutate(Pathway=gsub("-",".",Pathway))%>%
+                      filter(Pathway%in%gene_sets_of_interest|Pathway%in%gene_set_of_interest_2)
+
+
+GO_bar_chart<-bind_rows(hallmark_results,keggplus_results)%>%
+        arrange(((Score)))%>%
+        mutate(Pathway=factor(Pathway,levels=Pathway))%>%
+        mutate(direction=ifelse(Score>0,"PAM","PBS"))%>%
+        ggplot(aes(x=Score,y=Pathway,color=direction))+
+        geom_point()+
+        scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+        geom_col(width = 0.1)+
+        geom_vline(xintercept = 0,lty=2)+
+        theme_classic(base_size = 12)+
+        guides(color="none")+
+        ylab("Pathway")+
+        xlab("Significance (-log10 p value)")+
+        ggtitle("HSPC-MPP c5")+
+        scale_x_continuous(breaks=c(seq(from=-100,to=240,by=40),0))+
+        theme(plot.title = element_text(hjust=0.5))
+
+ggsave(GO_bar_chart,filename=paste0(save_folder,"HSPC_c5_GO_bar_chart.pdf"),width=8,height=4)
+
+```
+
+```{r heatmap of PBS treated cells for stemness signatures}
+ssGSEA_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_keggplus@scale.data))
+
+gene_sets_of_interest<-c("IVANOVA.HEMATOPOIESIS.STEM.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.MATURE.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.EARLY.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.INTERMEDIATE.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.LATE.PROGENITOR",
+                                                    "JAATINEN.HEMATOPOIETIC.STEM.CELL.UP",
+                                                    "BROWN.MYELOID.CELL.DEVELOPMENT.UP",
+                                                    "GAL.LEUKEMIC.STEM.CELL.UP")
+
+ssGSEA_out%>%
+      select(group3_rev,Treatment,all_of(gene_sets_of_interest))%>%
+      tidyr::pivot_longer( cols =-c(group3_rev,Treatment),names_to = "Pathway",values_to = "Score"
+                          )%>%
+      group_by(group3_rev,Treatment,Pathway)%>%
+      summarise(med_value=median(Score))%>%
+      filter(Treatment=="PBS")%>%
+      filter(group3_rev!="Other")%>%
+      ungroup()%>%
+      tidyheatmaps::tidy_heatmap(rows = Pathway,columns = group3_rev,values = med_value,scale = "row",
+                                 colors =viridis::magma(n=50),
+                                 cluster_rows = T,treeheight_row = 0,angle_col = 45,
+                                 cellheight = 6,cellwidth =6,fontsize = 5,
+                                 filename = paste0(save_folder,"stemness_heatmap.pdf"),width = 5,height = 4)
+```
+
+```{r heatmap for PAM vs PBS HSPCs}
+HSPC_enriched<- grep("HSCP|Pro|granu|myeloid|Myeloid_progenitor_[AB]",levels(s_data$group3)[10:21],value = T)
+
+select_cells<- grep("Myeloid_pro|c14$|c12$|c1$|Baso|DC|Other",levels(s_data$group3),invert = T,value = T)
+
+ssGSEA_out_hallmark<-data.frame(s_data@meta.data,t(s_data@assays$escape_hallnark@scale.data))
+ssGSEA_out_kegg<-data.frame(s_data@meta.data,t(s_data@assays$escape_keggplus@scale.data))
+
+
+gene_sets_of_interest_stem<-c("IVANOVA.HEMATOPOIESIS.STEM.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.MATURE.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.EARLY.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.INTERMEDIATE.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.LATE.PROGENITOR",
+                                                    "JAATINEN.HEMATOPOIETIC.STEM.CELL.UP",
+                                                    "BROWN.MYELOID.CELL.DEVELOPMENT.UP",
+                                                    "GAL.LEUKEMIC.STEM.CELL.UP",
+                         "KEGG.ANTIGEN.PROCESSING.AND.PRESENTATION"
+                         )
+
+gene_sets_of_interest_hallmark<-gsub("_",".",c("HALLMARK_INTERFERON_ALPHA_RESPONSE","HALLMARK_INTERFERON_GAMMA_RESPONSE",
+                         "HALLMARK_E2F_TARGETS","HALLMARK_ALLOGRAFT_REJECTION","HALLMARK_TNFA_SIGNALING_VIA_NFKB"
+                         ))
+
+ssGSEA_out_hallmark%>%
+      select(group3_rev,Treatment,all_of(gene_sets_of_interest_hallmark))%>%
+      bind_cols(ssGSEA_out_kegg%>%select(all_of(gene_sets_of_interest_stem)))%>%
+      tidyr::pivot_longer( cols =-c(group3_rev,Treatment),names_to = "Pathway",values_to = "Score"
+                          )%>%
+      group_by(group3_rev,Treatment,Pathway)%>%
+      summarise(med_value=median(Score))%>%
+      filter(group3_rev%in%select_cells)%>%
+      ungroup()%>%
+      arrange(group3_rev,Treatment)%>%
+      mutate(sample_type=paste(group3_rev,Treatment,sep="_"))%>%
+      tidyheatmaps::tidy_heatmap(rows = Pathway,columns = sample_type,
+                                 values = med_value,scale = "row",gaps_col = group3_rev,
+                         colors =viridis::rocket(n=100),show_colnames = F,
+                         cluster_rows = T,treeheight_row = 0,angle_col = 45,
+                         cellheight = 8,cellwidth =12,fontsize = 5,
+                         annotation_col = c(Treatment,group3_rev),color_legend_n = 100,
+                         annotation_colors = list(group3_rev=rev(color_scheme_rev[select_cells]),
+                                                  Treatment=c("PBS"="grey70",
+                                               "PAM"=brewer.pal(n=5,name="Reds")[5])),
+                                 filename = paste0(save_folder,"hallmark_inflammatory_stemness_PBS_PAM_heatmap_rocket.pdf"),width = 7.5,height = 4)
+```
+
+```{r hallmark plotting against pseudotime}
+library(ggnewscale)
+ssGSEA_Hallmark_norm_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_hallnark_normalized@data))
+ssGSEA_Kegg_norm_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_keggplus_normalized@data))
+
+grep("TNF",colnames(ssGSEA_Hallmark_out),value=TRUE)
+
+TNF_pseudo<-ggplot(ssGSEA_Hallmark_norm_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=HALLMARK.TNFA.SIGNALING.VIA.NFKB,group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+grep("INTER",colnames(ssGSEA_Hallmark_out),value=TRUE)
+IFNG_pseudo<-ggplot(ssGSEA_Hallmark_norm_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=HALLMARK.INTERFERON.GAMMA.RESPONSE,group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+
+grep("E2F",colnames(ssGSEA_Hallmark_out),value=TRUE)
+E2F_pseudo<-ggplot(ssGSEA_Hallmark_norm_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=HALLMARK.E2F.TARGETS,group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+ANTIGEN_pseudo<-ggplot(ssGSEA_Kegg_norm_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=KEGG.ANTIGEN.PROCESSING.AND.PRESENTATION,group=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+  geom_point(aes(color=Treatment),size=0.05)+
+            geom_smooth(aes(color=Treatment))+
+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+
+
+GAL_Leuk_pseudo<-ggplot(ssGSEA_Kegg_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=GAL.LEUKEMIC.STEM.CELL.UP,group=Treatment))+
+             scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+  geom_point(aes(color=Treatment),size=0.05)+
+            geom_smooth(aes(color=Treatment))+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+INVANOVA_STEM_Leuk_pseudo<-ggplot(ssGSEA_Kegg_norm_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=IVANOVA.HEMATOPOIESIS.STEM.CELL,group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+
+grep("BROWN",colnames(ssGSEA_Kegg_out),value=TRUE)
+
+BROWN_myeloid_pseudo<-ggplot(ssGSEA_Kegg_norm_out%>%
+          filter(group3!="Other"),aes(x=URD_pseuodtime[,1],y=BROWN.MYELOID.CELL.DEVELOPMENT.UP,group=Treatment))+
+          geom_smooth(aes(color=Treatment))+
+            scale_color_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+           new_scale_color() +
+          geom_rug(data=
+                      ssGSEA_out%>%
+                      filter(group3!="Other")%>%
+                      group_by(group3_rev,Treatment)%>%
+                      summarize(med_URD=median(URD_pseuodtime[,1])),
+                     aes(color=group3_rev,
+                         x=med_URD,
+                        y = NULL),sides = "t",alpha=1,cex=1)+
+           scale_color_manual(values = color_scheme)+
+          guides(color="none")+xlab("Pseudotime")+
+          theme_classic(base_size = 8)
+
+
+cowplot::plot_grid(#TNF_pseudo,
+                   #IFNG_pseudo,
+                  # E2F_pseudo,
+                   ANTIGEN_pseudo+scale_y_continuous(limits = c(0,5)),
+               #    INVANOVA_STEM_Leuk_pseudo+scale_y_continuous(limits = c(0,5)),
+                   GAL_Leuk_pseudo+scale_y_continuous(limits = c(-1,5)),
+                #   BROWN_myeloid_pseudo+scale_y_continuous(limits = c(-1,5)),
+                   ncol=1)
+                   
+```
+
+```{r pathway violin plots}
+ssGSEA_Hallmark_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_hallnark@scale.data))
+ssGSEA_Kegg_norm_out<-data.frame(s_data@meta.data,t(s_data@assays$escape_keggplus_normalized@data))
+
+
+gene_sets_of_interest<-c("IVANOVA.HEMATOPOIESIS.STEM.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.MATURE.CELL",
+                                                    "IVANOVA.HEMATOPOIESIS.EARLY.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.INTERMEDIATE.PROGENITOR",
+                                                    "IVANOVA.HEMATOPOIESIS.LATE.PROGENITOR",
+                                                    "JAATINEN.HEMATOPOIETIC.STEM.CELL.UP",
+                                                    "BROWN.MYELOID.CELL.DEVELOPMENT.UP",
+                                                    "GAL.LEUKEMIC.STEM.CELL.UP")
+
+
+violin_out<-ssGSEA_Kegg_norm_out%>%
+      select(group3_rev,Treatment,all_of(gene_sets_of_interest))%>%
+      tidyr::pivot_longer( cols =-c(group3_rev,Treatment),names_to = "Gene",values_to = "Expression"
+                          )%>%
+      filter(group3_rev=="HSCP-MPP_c5")%>%
+      mutate(Gene=factor(Gene,level=gene_sets_of_interest))%>%
+      ggplot(aes(x=Treatment,y=Expression,fill=Treatment))+
+            geom_violin()+geom_jitter(size=0.2)+
+            facet_wrap(~Gene,scale="free")+
+            scale_fill_manual(values = c("PBS"="grey70","PAM"=brewer.pal(n=5,name="Reds")[5]))+
+            theme_classic(base_size = 10)+
+            guides(fill="none")+
+            ylab("SCT normalized expression")+
+            theme(strip.background = element_blank())
+
+
+```
+
+
+
+
+
+```{r OTHER}
+Idents(s_data_HSPC_PBS)<-"group3_rev"
+
+all.markers%>%group_by(cluster)%>%slice(1:15)
+
+gene_sets<-s_data_HSPC@assays$escape.ssGSEA_HALLNARK%>%rownames()
+ggsave(heatmapEnrichment(s_data_HSPC, group.by = "Treatment",cluster.rows = T,
+                  facet.by = "group3_rev",scale=T,
+                  gene.set.use =gene_sets[1:50],
+                  assay = "escape.ssGSEA_HALLNARK"),
+       file=paste0(save_folder,"/HALLMARK_HSPC.pdf"),height = 15,width = 10)
+
+```
+
+```{r mature PAM vs PBS heatmap on pathways}
+mature_enriched<- levels(s_data$group3)[c(2:3,5:9)]
+s_data_mature<-subset(s_data,group3%in%mature_enriched)
+
+ggsave(heatmapEnrichment(s_data_mature, group.by = "Treatment",cluster.rows = T,
+                  facet.by = "group3_rev",scale=T,
+                  gene.set.use =gene_sets[1:50],
+                  assay = "escape.ssGSEA_HALLNARK"),
+       file=paste0(save_folder,"/HALLMARK_mature.pdf"),height = 15,width = 10)
+
+
+geyserEnrichment(s_data_HSPC, group.by = "Treatment",
+                 assay = "escape.ssGSEA_HALLNARK_normalized",
+                 gene.set = "HALLMARK-INTERFERON-GAMMA-RESPONSE", 
+                 facet.by = "group3_rev")+facet_wrap(~group3_rev,scales = "free")
+
+
+```

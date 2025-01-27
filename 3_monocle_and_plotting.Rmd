@@ -1,0 +1,293 @@
+---
+title: "Monocle Pseudotime"
+output: html_document
+date: "2023-02-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/bowmanrl/Projects/Meyer/TLR/')
+```
+
+```{r}
+save_folder<-'/Users/bowmanrl/Projects/Meyer/TLR/Results/2024/November/11_10_2024'
+```
+
+```{r data setup initial phase,eval=FALSE}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+library(pals)
+library(RColorBrewer)
+library(msigdbr)
+library(magrittr)
+library(monocle3)
+library(ggridges)
+
+setwd("/Users/bowmanrl/Projects/Meyer/TLR/")
+s_data<-readRDS(file="./Data/seurat_SCTprepped_Prot-CLR_URD_BB.rds")
+Seurat::DefaultAssay(s_data)<-"SCT"
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "Treatment",
+                             metadata = s_data@meta.data%>%  
+                             mutate(Treatment=factor(ifelse(grepl("PBS",orig.ident),"PBS","PAM"),
+                                                      levels=c("PBS","PAM"))) )
+
+
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name = "group3",
+                             metadata = s_data@meta.data%>%                                          mutate(group3=ifelse(icgs2_celltype_mp_subclust=="NA",icgs2_celltype,icgs2_celltype_mp_subclust))%>%
+                                          mutate(group3=ifelse(grepl("proNeu-1",group3),"ProNeu1",group3))%>%
+                                          mutate(group3=ifelse(grepl("pr[eo]Neu-2",group3),"ProNeu2",group3))%>%
+                                          mutate(group3=ifelse(grepl("kidney",group3),"Myeloid_progenitor_A",group3))%>%
+                                          mutate(group3=ifelse(grepl("Thymus",group3),"Myeloid_progenitor_B",group3))%>%
+                                          mutate(group3=ifelse(grepl("Adipose",group3),"Myeloid_progenitor_C",group3))%>%
+                                          mutate(group3=gsub("Bone marrow","BM",group3))%>%
+                                          mutate(group3=ifelse(grepl("removed",group3),"Other",group3))%>%
+                                          pull(group3))
+                       
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(URD_pseuodtime[,1]))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)
+final_order<-  rev(c(pseudo_order[-9],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+```
+
+```{r color setup}
+color_scheme <-pals::kelly(n = 22)[-1]
+color_scheme[10]<-color_scheme[11]
+color_scheme[11]<-color_scheme[20]
+color_scheme[20]<-color_scheme[2]
+color_scheme[2]<-color_scheme[8]
+color_scheme[14]<- "darkslategray3"
+color_scheme[8]<-"grey35"
+color_scheme[21]<-"grey80"
+names(color_scheme)<-rev(levels(s_data@meta.data$group3))
+
+```
+
+```{r monocle setup, you can skip this one as the output as been saved}
+cds <- SeuratWrappers::as.cell_data_set(s_data)
+head(colData(cds))
+
+recreate.partitions <- c(rep(1, length(cds@colData@rownames)))
+names(recreate.partitions) <- cds@colData@rownames
+recreate.partitions <- as.factor(recreate.partitions)
+recreate.partitions
+
+cds@clusters@listData[["UMAP"]][["partitions"]] <- recreate.partitions
+list.cluster <- s_data@active.ident
+cds@clusters@listData[["UMAP"]][["clusters"]] <- list.cluster
+
+cds@int_colData@listData[["reducedDims"]]@listData[["UMAP"]] <- data.frame(s_data@meta.data$UMAP_1_all,s_data@meta.data$UMAP_2_all)
+
+cluster.before.traj <-plot_cells(cds, color_cells_by = "cluster", label_groups_by_cluster = T, 
+           group_label_size = 5) + theme(legend.position = "right")
+
+cds <- learn_graph(cds, use_partition = F)
+plot_cells(cds, color_cells_by = "cluster", label_groups_by_cluster = F,
+           label_branch_points = T, label_roots = T, label_leaves = F,
+           group_label_size = 5)
+
+cds <- order_cells(cds, reduction_method = "UMAP", root_cells = colnames(cds[, clusters(cds) == "HSCP-MPP_c5"]))
+plot_cells(cds, color_cells_by = "pseudotime", label_groups_by_cluster = T,
+           label_branch_points = T, label_roots = F, label_leaves = F)
+```
+
+```{r apply to seurat object}
+library(igraph)
+
+cds<-readRDS(file = "/Users/bowmanrl/Projects/Meyer/TLR/Data/monocle_cds.rds")
+
+data.pseudo <- as.data.frame(colData(cds))
+s_data<- Seurat::AddMetaData(object=s_data,
+                             col.name="monocle3_pseudotime",
+                             metadata=data.pseudo$monocle3_pseudotime)
+
+pseudo_order <-s_data@meta.data%>%
+                  group_by(group3)%>%
+                  summarize(median_pseudo=median(monocle3_pseudotime))%>%
+                  arrange(median_pseudo)%>%
+                  pull(group3)%>%as.character
+final_order<-  rev(c(pseudo_order[pseudo_order!="Other"],"Other"))
+
+s_data@meta.data$group3<-factor(s_data@meta.data$group3,levels=c(final_order))
+
+```
+
+
+```{r pseudotime plotting for monocle}
+library(ggridges)
+monocle_Pseudo_ridge<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=monocle3_pseudotime,
+           y=group3,
+           fill=group3)) +
+  stat_density_ridges(alpha=0.8,stat="count")+
+  xlab("Pseudotime Monocle")+
+  ylab("")+
+  scale_fill_manual(values=color_scheme,
+                     "ICSG2 Cell Type") +    
+  guides(fill="none")+
+    theme_classic(base_size = 14)#+
+
+ggsave(plot=monocle_Pseudo_ridge,
+          filename = paste0(save_folder,"/monocle3_Pseudo_ridge.pdf"),
+       width = 6,
+       height = 8
+        )
+
+monocle_Pseudo_ridge_faceted<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=monocle3_pseudotime,
+           y=group3,
+           fill=group3)) +
+  stat_density_ridges(alpha=0.8,stat="count")+
+  xlab("Pseudotime Monocle")+
+  ylab("")+
+  facet_grid(.~Treatment)+
+  scale_fill_manual(values=color_scheme,
+                     "ICSG2 Cell Type") +    
+    theme_classic(base_size = 14)#+
+
+ggsave(plot=monocle_Pseudo_ridge_faceted,
+        filename = paste0(save_folder,"/monocle3_Pseudo_ridge_faceted.pdf"),
+       width = 10,
+       height = 8
+        )
+
+
+monocle_Pseudo_ridge_split<-ggplot(s_data@meta.data%>%
+                          filter(group3!="Other"),
+       aes(x=monocle3_pseudotime,
+           y=group3,
+           fill=Treatment)) +
+  stat_density_ridges(alpha=0.3,stat="count")+
+  xlab("Pseudotime URD")+
+  ylab("")+
+  scale_fill_manual(values=c("PBS"="grey50","PAM"=brewer.pal(n=5,name = "Reds")[5]),
+                     "Treatment") +    
+  #guides(fill="none")+
+  theme_classic(base_size = 14)+
+  theme(strip.background = element_blank())
+
+ggsave(plot=monocle_Pseudo_ridge_split,
+      filename = paste0(save_folder,"/monocle3_Pseudo_ridge_split.pdf"),
+       width = 6,
+       height = 8
+        )
+```
+
+------------------------------------------------
+LEFTOVER PSEUDOTIME ANALYSIS
+
+```{r identify branch and root nodes and}
+MST <- principal_graph(cds)[['UMAP']]
+branch_nodes<-gsub("Y_","",names(which(degree(MST)==3)))
+root_nodes<-gsub("Y_","",names(which(degree(MST)==1)))
+
+branch_nodes_Y<-names(which(degree(MST)==3))
+root_nodes_Y<-names(which(degree(MST)==1))
+closest_vertex <-  data.frame("Treatment"=factor(ifelse(grepl("PBS",colData(cds)$orig.ident),"PBS","PAM"),
+                                                           levels=c("PBS","PAM")) ,
+                              "Cell_type"=colData(cds)$group3,
+                              "Vertex"= cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex)
+
+branch_cells<-closest_vertex%>%filter(Vertex%in%branch_nodes)
+root_cells<-closest_vertex%>%filter(Vertex%in%root_nodes)
+s_data<-Seurat::AddMetaData(object=s_data,
+                             col.name="branch_cells",
+                             metadata=ifelse(rownames(s_data@meta.data)%in%rownames(branch_cells),"Branch","non-branch"))
+```
+
+```{r dist}
+dist_check<-igraph::distances(cds@principal_graph_aux@listData[["UMAP"]][["pr_graph_cell_proj_tree"]],
+                            to=names(degree(MST)))
+
+
+closest_branch<-dist_check%>%data.frame()%>%
+            tibble::rownames_to_column(var="cell")%>%
+            filter(!grepl("^Y",cell))%>%
+            select(cell, all_of(branch_nodes_Y))%>%
+            full_join(branch_cells%>%tibble::rownames_to_column(var="cell"), by="cell")%>%
+            tidyr::pivot_longer(cols =all_of(branch_nodes_Y),names_to = "branch_node",values_to = "distance" )%>%
+            group_by(cell)%>%
+            mutate(closest_branch=branch_node[distance==min(distance)])%>%
+        #    mutate(near_branch=ifelse(distance<band_cutoff, branch_node[distance==min(distance)],"none"))%>%
+            select(cell,closest_branch)%>%
+            distinct()
+rownames(closest_branch)<-closest_branch$cell
+s_data<-Seurat::AddMetaData(object=s_data,
+                             col.name="closest_branch",
+                             metadata=closest_branch[rownames(s_data@meta.data),])
+
+band_cutoff<- 4
+near_branch<-dist_check%>%data.frame()%>%
+            tibble::rownames_to_column(var="cell")%>%
+            filter(!grepl("^Y",cell))%>%
+            select(cell, all_of(branch_nodes_Y))%>%
+            full_join(branch_cells%>%tibble::rownames_to_column(var="cell"), by="cell")%>%
+            tidyr::pivot_longer(cols =all_of(branch_nodes_Y),names_to = "branch_node",values_to = "distance" )%>%
+            group_by(cell)%>%
+            arrange((distance))%>%
+            slice(1)%>%
+            mutate(near_branch=ifelse(distance<band_cutoff, branch_node,"none"))%>%
+            select(cell,near_branch)%>%
+            distinct()
+
+rownames(near_branch)<-near_branch$cell
+            
+s_data<-Seurat::AddMetaData(object=s_data,
+                             col.name="near_branch",
+                             metadata=near_branch[rownames(s_data@meta.data),])
+
+ggplot(s_data@meta.data,
+       aes(x=UMAP_1_all,y=UMAP_2_all,color=branch_cells,label=near_branch))+
+        geom_point_rast(size=0.1)+
+        geom_label_repel(data=s_data@meta.data%>%
+                filter(branch_cells!="non-branch")%>%
+                group_by(near_branch)%>%
+                slice(1),
+                aes(x=UMAP_1_all,y=UMAP_2_all,color=near_branch,label=near_branch),
+                color="black")
+
+table(near_branch$near_branch)
+```
+
+```{r}
+s_data<-Seurat::AddMetaData(object=s_data,
+                             col.name="Treatment",
+                             metadata=ifelse(grepl("PBS",s_data$orig.ident),"PBS","PAM"))
+
+Idents(s_data)<-"near_branch"
+DefaultAssay(s_data)<-"RNA"
+
+results<-lapply(levels(Idents(s_data)),function(ident){
+FindMarkers(s_data,ident.1 = "PAM",ident.2 = "PBS",group.by ="Treatment",subset.ident =ident )
+})
+
+FindMarkers(s_data,ident.1 = "PAM",ident.2 = "PBS",group.by ="Treatment",subset.ident ="Y_230" )
+
+
+```
+
+
+```{r}
+
+table(s_data$group3,s_data$near_branch,s_data$Treatment)
+
+
+Vertex_of_interest = "Y_70"
+quantile_range_of_interest = 0.01 #want low values cause dist low means closer to vertex of interest
+  #names(dist_check[,"Y_70"])[which(dist_check[,"Y_70"]<quantile(dist_check[,"Y_70"],prob=quantile_range_of_interest))]
+# this technically is fine since we just getting the same 10 percent each time
+name_list_for_each_Y<-apply(dist_check,2,function(x){
+  names(x)[which(x<quantile(x,prob=quantile_range_of_interest))]
+})
+```
+
